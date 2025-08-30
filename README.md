@@ -1,60 +1,50 @@
-# Marksheet Extractor – Multimodal LLM vs OCR + LLM
+# Marksheet Extraction API
 
-## 📌 Project Overview
-This project is focused on **automated marksheet data extraction** using two different approaches:
-1. **Multimodal LLM (OpenAI based)**
-2. **OCR + LLM (Hybrid pipeline)**
+## Overview
+This project provides an AI-powered API for extracting structured data from marksheets (images or PDFs). It uses Python, FastAPI, and OpenAI's Vision LLM for robust extraction, normalization, and confidence scoring.
 
-The goal is to extract structured information (like student name, roll number, marks, grades, etc.) from marksheets efficiently.
+## Features
+- Accepts JPG, PNG, and PDF marksheets (≤10MB)
+- Extracts candidate details, subject-wise marks, overall result, and issue info
+- Returns structured JSON with confidence scores for each field
+- Handles errors (invalid/large/wrong format files)
+- Supports concurrent requests
+- Modular, clean codebase
 
----
+## Setup & Usage
 
-## ⚡ Approach 1: Multimodal LLM (OpenAI)
-In this approach, we directly use a **Multimodal Large Language Model (LLM)** such as OpenAI’s GPT, which can handle both text and images.
+### 1. Clone the repo
+```bash
+git clone <your-repo-url>
+cd marksheet-extracter
+```
 
-- The marksheet image is directly fed into the LLM.
-- The LLM processes the image and extracts required structured fields.
-- No extra OCR step is required.
+### 2. Install dependencies
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
 
-✅ **Advantages**:
-- **Fast & efficient** – Results are generated quickly since no intermediate step is involved.  
-- **Better accuracy** – Multimodal LLMs understand both images and text naturally.  
-- **Clean pipeline** – Direct extraction without additional libraries.  
+### 3. Set up LLM credentials
+- Add your OpenAI API key in `.env` (not committed to repo).
 
-❌ **Disadvantages**:
-- **Requires API access** – Dependent on OpenAI or similar multimodal APIs.  
-- **Paid usage** – API usage might be costly at scale.  
-- **Internet dependency** – Needs a stable internet connection.  
+### 4. Run the API
+```bash
+uvicorn simple_main:app --reload
+```
 
----
+### 5. Test the API
+- Use `/extract` endpoint with a marksheet file (image/PDF).
+- See sample requests in `test/`.
 
-## ⚡ Approach 2: OCR + LLM
-In this hybrid method:
-1. First, the marksheet image is passed through an **OCR (Optical Character Recognition)** engine such as **Tesseract** or **EasyOCR**.  
-2. The extracted raw text is then given to the **LLM** for parsing and structuring.  
+## How to Run
+1. Start the API server:
+ ```bash
+ uvicorn simple_main:app --reload
+ ```
+2. Send a POST request to `/extract` with a marksheet file.
+3. Receive structured JSON output with confidence scores.
 
-✅ **Advantages**:
-- **Can run locally** – No need for cloud multimodal APIs if OCR + local LLM are used.  
-- **More flexible** – OCR can be fine-tuned or replaced with better models if needed.  
-
-❌ **Disadvantages**:
-- **Slower performance** – Since OCR runs first and then LLM processes the output, the pipeline is relatively slow.  
-- **Hardware dependency** – On machines without GPU, OCR takes significantly more time.  
-- **Error-prone** – OCR sometimes introduces mistakes in text extraction, which reduces the LLM’s accuracy.  
-- **Lengthy process** – Multiple steps increase complexity.  
-
----
-
-## 🚀 Why Multimodal LLM is Preferred?
-- **Speed**: OpenAI’s multimodal LLM gives results much faster than OCR + LLM.  
-- **Accuracy**: It avoids OCR-induced errors.  
-- **Simplicity**: A single model handles both vision and text, reducing complexity.  
-
-However, **OCR + LLM** can still be useful in environments where:
-- API access is restricted,  
-- Internet is unavailable, or  
-- Cost needs to be minimized.  
-
----
-
-## 📂 Project Structure
+## Sample Mark Sheets
+- See `test/` for example mark sheets used in testing.
