@@ -15,7 +15,7 @@ This project provides an AI-powered API for extracting structured data from mark
 
 ### 1. Clone the repo
 ```bash
-git clone <your-repo-url>
+git clone <repo-url>
 cd marksheet-extracter
 ```
 
