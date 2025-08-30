@@ -27,7 +27,7 @@ except ImportError:
 
 # Load environment variables
 load_dotenv()
-OPENAI_API_KEY="paste the API key"
+OPENAI_API_KEY="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"
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 # Verify OpenAI API key
 if not os.getenv("OPENAI_API_KEY"):
@@ -310,13 +310,13 @@ IMPORTANT:
             print(f"📄 Added page {i+1} to request")
         
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-4.1-nano",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": content}
             ],
             max_completion_tokens=4000,
-            temperature=0.1
+            temperature=1
         )
         
         if not response.choices or not response.choices[0].message.content:
