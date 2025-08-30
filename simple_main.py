@@ -27,7 +27,7 @@ except ImportError:
 
 # Load environment variables
 load_dotenv()
-OPENAI_API_KEY="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"
+OPENAI_API_KEY="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"
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 # Verify OpenAI API key
 if not os.getenv("OPENAI_API_KEY"):
