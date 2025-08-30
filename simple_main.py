@@ -28,6 +28,8 @@ except ImportError:
 # Load environment variables
 load_dotenv()
 
+api_key = os.getenv("OPENAI_API_KEY")
+print(api_key) 
 # Verify OpenAI API key
 if not os.getenv("OPENAI_API_KEY"):
     print("ERROR: Please set OPENAI_API_KEY in your .env file")
