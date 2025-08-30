@@ -15,12 +15,21 @@ from PIL import Image
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# Loading environment variables
+# PDF processing imports
+try:
+    from pdf2image import convert_from_bytes
+    PDF_SUPPORT = True
+    print("✅ PDF support enabled")
+except ImportError:
+    PDF_SUPPORT = False
+    print("❌ PDF support disabled. Install: pip install pdf2image")
+    print("   Also install poppler-utils for your OS")
+
+# Load environment variables
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY="paste the API key"
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
-
-
+# Verify OpenAI API key
 if not os.getenv("OPENAI_API_KEY"):
     print("ERROR: Please set OPENAI_API_KEY in your .env file")
     print("Example .env file content:")
@@ -43,10 +52,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initializing OpenAI 
+# Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-
+# Pydantic Models
 class ConfidenceField(BaseModel):
     value: Optional[str] = None
     confidence: float = Field(ge=0.0, le=1.0)
@@ -83,7 +92,7 @@ class MarksheetExtraction(BaseModel):
     issue_details: IssueDetails
     extraction_metadata: Dict[str, Any]
 
-
+# Helper Functions
 def calculate_confidence(value: str, field_type: str) -> float:
     """Calculate confidence based on field type"""
     if not value or not value.strip():
@@ -121,50 +130,87 @@ def create_confidence_field(value: Any, field_type: str) -> ConfidenceField:
     
     return ConfidenceField(value=value_str, confidence=confidence)
 
+def process_pdf_to_images(content: bytes) -> List[str]:
+    """Convert PDF pages to base64 images"""
+    if not PDF_SUPPORT:
+        raise HTTPException(
+            status_code=400, 
+            detail="PDF processing not available. Please install pdf2image and poppler-utils"
+        )
+    
+    try:
+        print("📄 Converting PDF pages to images...")
+        
+        # Convert PDF to images (limit to first 5 pages for API efficiency)
+        images = convert_from_bytes(
+            content, 
+            dpi=200,  # Good quality but not too large
+            first_page=1,
+            last_page=5,  # Limit pages to avoid timeout
+            fmt='PNG'
+        )
+        
+        print(f"📄 Converted {len(images)} pages from PDF")
+        
+        base64_images = []
+        for i, image in enumerate(images):
+            print(f"📄 Processing page {i+1}...")
+            
+            # Resize if too large
+            max_size = 800
+            if image.width > max_size or image.height > max_size:
+                image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+            
+            # Convert to RGB if needed
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            # Save to base64
+            buffer = BytesIO()
+            image.save(buffer, format='PNG', optimize=True, quality=85)
+            img_base64 = base64.b64encode(buffer.getvalue()).decode()
+            base64_images.append(img_base64)
+        
+        return base64_images
+        
+    except Exception as e:
+        print(f"❌ PDF processing error: {e}")
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Failed to process PDF: {str(e)}"
+        )
+
 def process_image(content: bytes) -> str:
-    """Convert image to base64"""
+    """Convert single image to base64"""
     try:
         image = Image.open(BytesIO(content))
         
         if image.mode not in ('RGB', 'L'):
             image = image.convert('RGB')
         
-        
-        max_size = 800  
+        # Reduce image size to avoid API limits
+        max_size = 800
         if image.width > max_size or image.height > max_size:
             image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
             print(f"Image resized to: {image.size}")
         
         buffer = BytesIO()
-        image.save(buffer, format='PNG', optimize=True, quality=85)  
-        img_bytes = buffer.getvalue()
-        
-        # Checking final size
-        size_mb = len(img_bytes) / (1024 * 1024)
-        print(f"Processed image size: {size_mb:.2f}MB")
-        
-        if size_mb > 5:  # If still too large, then we reduce it further
-            image.thumbnail((600, 600), Image.Resampling.LANCZOS)
-            buffer = BytesIO()
-            image.save(buffer, format='PNG', optimize=True, quality=75)
-            img_bytes = buffer.getvalue()
-            size_mb = len(img_bytes) / (1024 * 1024)
-            print(f"Further reduced image size: {size_mb:.2f}MB")
-        
-        return base64.b64encode(img_bytes).decode()
+        image.save(buffer, format='PNG', optimize=True, quality=85)
+        return base64.b64encode(buffer.getvalue()).decode()
         
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error processing image: {str(e)}")
 
 def validate_file(file: UploadFile) -> None:
-    """Validate uploaded file"""
+    """Validate uploaded file - supports images and PDFs"""
     if file.size and file.size > 10 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File size exceeds 10MB limit")
     
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
     
-    allowed_extensions = {'.jpg', '.jpeg', '.png', '.webp'}
+    # Updated to include PDF support
+    allowed_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.pdf'}
     file_extension = os.path.splitext(file.filename)[1].lower()
     
     if file_extension not in allowed_extensions:
@@ -172,32 +218,38 @@ def validate_file(file: UploadFile) -> None:
             status_code=400, 
             detail=f"Unsupported file type. Allowed: {', '.join(sorted(allowed_extensions))}"
         )
+    
+    # Check PDF support
+    if file_extension == '.pdf' and not PDF_SUPPORT:
+        raise HTTPException(
+            status_code=400,
+            detail="PDF processing not available. Install pdf2image and poppler-utils"
+        )
 
 def clean_response_text(text: str) -> str:
-    """Clean OpenAI response by removing markdown code blocks and extra content"""
+    """Clean OpenAI response"""
     if not text:
         return ""
     
-    # Remove code block markers
     text = text.replace('``````', '')
     text = text.strip()
     
-    # Try to find JSON content
     if '{' in text and '}' in text:
         start = text.find('{')
-        # Find the last closing brace
         end = text.rfind('}') + 1
         if start != -1 and end > start:
             text = text[start:end]
     
     return text
 
-async def extract_with_openai(image_b64: str) -> Dict[str, Any]:
-    """Extract data using OpenAI Vision API with robust error handling"""
+async def extract_with_openai_multi_page(images_b64: List[str]) -> Dict[str, Any]:
+    """Extract data from multiple images (PDF pages) using OpenAI"""
     
     system_prompt = """You are an expert at extracting information from marksheets and academic documents.
 
-Analyze the image and extract information in this exact JSON format:
+You will receive multiple images that are pages from a single marksheet document. Analyze ALL pages together and extract comprehensive information.
+
+Return the data in this exact JSON format:
 
 {
     "candidate_details": {
@@ -229,33 +281,41 @@ Analyze the image and extract information in this exact JSON format:
     }
 }
 
-IMPORTANT: Return ONLY valid JSON. No explanations, no markdown, no extra text."""
+IMPORTANT: 
+1. Combine information from ALL pages
+2. Look for subjects across all pages
+3. Return ONLY valid JSON, no explanations
+4. Use null for missing fields"""
 
     try:
-        print("🤖 Sending request to OpenAI...")
+        print(f"🤖 Sending {len(images_b64)} pages to OpenAI...")
+        
+        # Prepare content with all images
+        content = [
+            {
+                "type": "text",
+                "text": f"Extract all information from this {len(images_b64)}-page marksheet document. Analyze all pages together."
+            }
+        ]
+        
+        # Add all images to the content
+        for i, img_b64 in enumerate(images_b64):
+            content.append({
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{img_b64}",
+                    "detail": "high"
+                }
+            })
+            print(f"📄 Added page {i+1} to request")
         
         response = client.chat.completions.create(
-            model="gpt-4o-mini",  
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Extract all information from this marksheet image and return as JSON."
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{image_b64}",
-                                "detail": "high"
-                            }
-                        }
-                    ]
-                }
+                {"role": "user", "content": content}
             ],
-            max_completion_tokens=3000,  
+            max_completion_tokens=4000,
             temperature=0.1
         )
         
@@ -264,16 +324,14 @@ IMPORTANT: Return ONLY valid JSON. No explanations, no markdown, no extra text."
             raise HTTPException(status_code=500, detail="Empty response from OpenAI")
         
         response_content = response.choices[0].message.content.strip()
-        print(f"✅ Received response from OpenAI (length: {len(response_content)})")
-        print(f"📝 First 200 chars: {response_content[:200]}...")
+        print(f"✅ Received response from OpenAI")
         
-        # Clean the response
+        # Clean and parse response
         clean_content = clean_response_text(response_content)
-        print(f"🧹 Cleaned content (length: {len(clean_content)})")
         
         if not clean_content:
             print("❌ No content after cleaning")
-            raise HTTPException(status_code=500, detail="No valid content in OpenAI response")
+            raise HTTPException(status_code=500, detail="No valid content in response")
         
         try:
             parsed_data = json.loads(clean_content)
@@ -282,10 +340,8 @@ IMPORTANT: Return ONLY valid JSON. No explanations, no markdown, no extra text."
             
         except json.JSONDecodeError as json_error:
             print(f"❌ JSON parsing failed: {json_error}")
-            print(f"📄 Raw content: {clean_content[:500]}...")
-            
-            # Try to create a fallback response
-            fallback_response = {
+            # Return fallback response
+            return {
                 "candidate_details": {
                     "name": None, "father_mother_name": None, "roll_no": None,
                     "registration_no": None, "date_of_birth": None, "exam_year": None,
@@ -299,41 +355,51 @@ IMPORTANT: Return ONLY valid JSON. No explanations, no markdown, no extra text."
                     "issue_date": None, "issue_place": None
                 }
             }
-            
-            print("🔄 Using fallback response due to parsing error")
-            return fallback_response
         
     except Exception as e:
         print(f"❌ OpenAI API error: {e}")
-        print(f"Error type: {type(e).__name__}")
         raise HTTPException(status_code=500, detail=f"OpenAI API error: {str(e)}")
+
+async def extract_with_openai(image_b64: str) -> Dict[str, Any]:
+    """Extract data from single image using OpenAI"""
+    return await extract_with_openai_multi_page([image_b64])
 
 # API Endpoints
 @app.get("/")
 async def root():
     """Root endpoint"""
+    supported_formats = ["JPG", "JPEG", "PNG", "WebP"]
+    if PDF_SUPPORT:
+        supported_formats.append("PDF")
+    
     return {
         "message": "Marksheet Extraction API",
         "status": "active",
         "version": "1.0.0",
-        "supported_formats": ["JPG", "JPEG", "PNG", "WebP"],
+        "supported_formats": supported_formats,
         "max_file_size": "10MB",
+        "pdf_support": PDF_SUPPORT,
         "documentation": "/docs"
     }
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    supported_formats = ["JPG", "JPEG", "PNG", "WebP"]
+    if PDF_SUPPORT:
+        supported_formats.append("PDF")
+    
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
-        "supported_formats": ["JPG", "JPEG", "PNG", "WebP"]
+        "pdf_support": PDF_SUPPORT,
+        "supported_formats": supported_formats
     }
 
 @app.post("/extract", response_model=MarksheetExtraction)
 async def extract_marksheet(file: UploadFile = File(...)):
-    """Extract information from marksheet image"""
+    """Extract information from marksheet image or PDF"""
     
     print(f"📄 Processing file: {file.filename}")
     
@@ -344,15 +410,24 @@ async def extract_marksheet(file: UploadFile = File(...)):
         if not content:
             raise HTTPException(status_code=400, detail="Empty file")
         
-        print("🖼️ Converting image...")
-        image_b64 = process_image(content)
+        file_extension = os.path.splitext(file.filename)[1].lower()
         
-        print("🔍 Extracting data...")
-        raw_data = await extract_with_openai(image_b64)
+        # Process based on file type
+        if file_extension == '.pdf':
+            print("📄 Processing PDF file...")
+            images_b64 = process_pdf_to_images(content)
+            print(f"📄 Got {len(images_b64)} pages from PDF")
+            raw_data = await extract_with_openai_multi_page(images_b64)
+            pages_processed = len(images_b64)
+        else:
+            print("🖼️ Processing image file...")
+            image_b64 = process_image(content)
+            raw_data = await extract_with_openai(image_b64)
+            pages_processed = 1
         
         print("📊 Processing results...")
         
-        # candidate details
+        # Process candidate details
         candidate_raw = raw_data.get("candidate_details", {})
         candidate_details = CandidateDetails(
             name=create_confidence_field(candidate_raw.get("name"), "name"),
@@ -365,7 +440,7 @@ async def extract_marksheet(file: UploadFile = File(...)):
             institution=create_confidence_field(candidate_raw.get("institution"), "general")
         )
         
-        #  subjects
+        # Process subjects
         subjects_raw = raw_data.get("subjects", [])
         subjects = []
         for subject_data in subjects_raw:
@@ -380,7 +455,7 @@ async def extract_marksheet(file: UploadFile = File(...)):
         
         print(f"📚 Found {len(subjects)} subjects")
         
-        #  result
+        # Process overall result
         result_raw = raw_data.get("overall_result", {})
         overall_result = OverallResult(
             result_grade_division=create_confidence_field(result_raw.get("result_grade_division"), "grade"),
@@ -388,18 +463,20 @@ async def extract_marksheet(file: UploadFile = File(...)):
             cgpa=create_confidence_field(result_raw.get("cgpa"), "number")
         )
         
-        # issue details
+        # Process issue details
         issue_raw = raw_data.get("issue_details", {})
         issue_details = IssueDetails(
             issue_date=create_confidence_field(issue_raw.get("issue_date"), "date"),
             issue_place=create_confidence_field(issue_raw.get("issue_place"), "general")
         )
         
-        # Metadata
+        # Enhanced metadata
         metadata = {
             "filename": file.filename,
+            "file_type": file_extension,
             "file_size_mb": round(len(content) / (1024 * 1024), 2),
             "extraction_method": "OpenAI GPT-4o-mini Vision",
+            "pages_processed": pages_processed,
             "timestamp": datetime.now().isoformat(),
             "total_subjects": len(subjects),
             "status": "success"
@@ -421,7 +498,7 @@ async def extract_marksheet(file: UploadFile = File(...)):
         print(f"❌ Unexpected error: {e}")
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
-# Exception Handling
+# Exception Handlers
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
     return JSONResponse(
@@ -435,7 +512,16 @@ async def http_exception_handler(request, exc):
 
 if __name__ == "__main__":
     print("🚀 Starting Marksheet Extraction API...")
-    print("📁 Supported: JPG, JPEG, PNG, WebP")
+    
+    supported_formats = ["JPG", "JPEG", "PNG", "WebP"]
+    if PDF_SUPPORT:
+        supported_formats.append("PDF")
+    else:
+        print("⚠️  PDF support not available")
+        print("   Install with: pip install pdf2image")
+        print("   Also install poppler-utils for your OS")
+    
+    print(f"📁 Supported: {', '.join(supported_formats)}")
     print("📊 Max size: 10MB")
     print("🤖 Model: OpenAI GPT-4o-mini")
     print("📖 Docs: http://localhost:8000/docs")
